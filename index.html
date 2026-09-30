@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>汇率看板</title>
+<style>
+  :root{
+    --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb; --primary:#4f46e5;
+    --bg:#f0f2f5; --card:#fff; --soft:#f7f8fa;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--ink); font-size:14px;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:20px;font-weight:600;margin:0 0 16px;letter-spacing:.2px}
+
+  .panel{background:var(--card);border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,.08);overflow:hidden}
+
+  /* ---- 状态条 ---- */
+  .status{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:12px 16px;border-bottom:1px solid var(--line);background:var(--soft);
+  }
+  .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  .dot.live{background:#16a34a}
+  .dot.base{background:#d97706}
+  .dot.load{background:#9ca3af}
+  .status-text{flex:1;min-width:220px;color:var(--muted);font-size:13px;line-height:1.5}
+  .status-text b{color:var(--ink);font-weight:600}
+  .status-text .warn{color:#b45309;font-weight:600}
+
+  button{
+    font-family:inherit;font-size:13px;border-radius:7px;cursor:pointer;
+    padding:7px 14px;border:1px solid var(--line);background:#fff;color:var(--ink);
+    transition:background .15s,border-color .15s,color .15s;
+  }
+  button:hover{background:#f4f4f7}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  button.primary:hover{background:#4338ca}
+  button[disabled]{opacity:.55;cursor:default}
+  button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+
+  /* ---- 表格 ---- */
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:0;border-bottom:1px solid var(--line)}
+  thead th{
+    background:var(--soft);font-weight:600;font-size:12.5px;color:var(--muted);
+    text-align:right;padding:10px 16px;letter-spacing:.3px;white-space:nowrap;
+  }
+  thead th:first-child{text-align:left}
+  tbody tr:last-child td{border-bottom:none}
+  .cur{
+    font-weight:700;font-size:13px;letter-spacing:.5px;
+    padding:9px 16px;width:96px;white-space:nowrap;
+  }
+  .val{
+    text-align:right;padding:9px 16px;font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .val[contenteditable="true"]{outline:2px solid #c7d2fe;outline-offset:-2px;background:#eef2ff;border-radius:4px}
+  tbody tr:hover td{background:#fafaff}
+
+  /* ---- 底部操作区 ---- */
+  .bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 16px;border-top:1px solid var(--line);background:var(--soft)}
+  .hint{color:var(--muted);font-size:12.5px;margin-left:auto}
+
+  .note{margin-top:12px;color:var(--muted);font-size:12.5px;line-height:1.7}
+  .note b{color:var(--ink);font-weight:600}
+
+  /* ---- 诊断 ---- */
+  .diag{background:var(--card);border-radius:10px;margin-top:12px;padding:14px 16px;
+        box-shadow:0 1px 3px rgba(16,24,40,.08)}
+  .diag.hidden{display:none}
+  .diag h3{margin:0 0 10px;font-size:13.5px;font-weight:600}
+  .diag pre{
+    margin:0;padding:12px;background:#f8f9fb;border:1px solid var(--line);border-radius:7px;
+    font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:#374151;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  .diag .row{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .diag .tip{color:var(--muted);font-size:12px}
+
+  .link{color:var(--primary);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+  /* ---- 复制提示 ---- */
+  .toast{
+    position:fixed;left:50%;bottom:32px;transform:translate(-50%,16px);
+    background:#111827;color:#fff;font-size:13px;padding:9px 18px;border-radius:8px;
+    opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:99;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>汇率看板</h1>
+
+  <div class="panel">
+    <div class="status">
+      <span class="dot load" id="dot"></span>
+      <span class="status-text" id="statusText">正在读取汇率…</span>
+      <button id="btnRefresh">刷新汇率</button>
+      <button id="btnEdit">手动调整</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>货币</th>
+          <th>兑 SGD</th>
+          <th>兑 USD</th>
+          <th>兑 CNY</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+
+    <div class="bar">
+      <button class="primary" id="btnCopyAll">复制整表</button>
+      <button id="btnCopyVals">复制三列数值</button>
+      <span class="hint">换行分隔，可直接粘进 Excel / 文档</span>
+    </div>
+  </div>
+
+  <div class="note">
+    汇率为<b>市场中间价</b>，每月自动抓取一次（打开页面时若超过 30 天没更新就会自动刷新）。
+    若页面显示的是<b>基准表</b>，说明当时没连上汇率接口 —— 可点“刷新汇率”重试，
+    或点下方的<span class="link" id="diagLink">网络诊断</span>看具体卡在哪一步。
+  </div>
+
+  <div class="diag hidden" id="diagBox">
+    <h3>网络诊断</h3>
+    <pre id="diagText">正在逐个测试接口…</pre>
+    <div class="row">
+      <button id="btnRunDiag">重新诊断</button>
+      <button id="btnCopyDiag">复制诊断信息</button>
+      <span class="tip">把复制出来的内容发我，我就能判断该换哪个接口</span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     基础常量
+     ============================================================ */
+  var CURRENCIES = ['CNY','AUD','HKD','IDR','INR','JPY','KRW','MOP',
+                    'MYR','NZD','PHP','SGD','THB','TWD','USD','VND'];
+
+  // 行标签配色（照用户原表）
+  var ROW_STYLE = {
+    CNY:{bg:'#e5352b',fg:'#ffffff'},
+    AUD:{bg:'#d9d9d9',fg:'#333333'},
+    HKD:{bg:'#f6cdd4',fg:'#b03a3a'},
+    IDR:{bg:'#2b6cb0',fg:'#ffffff'},
+    INR:{bg:'#d9d9d9',fg:'#333333'},
+    JPY:{bg:'#cfe2f3',fg:'#333333'},
+    KRW:{bg:'#d9ead3',fg:'#333333'},
+    MOP:{bg:'#9ccc9c',fg:'#1f5c1f'},
+    MYR:{bg:'#38761d',fg:'#ffffff'},
+    NZD:{bg:'#b7c9c9',fg:'#333333'},
+    PHP:{bg:'#1f9e8f',fg:'#ffffff'},
+    SGD:{bg:'#e5352b',fg:'#ffffff'},
+    THB:{bg:'#4db6ac',fg:'#ffffff'},
+    TWD:{bg:'#d9d2e9',fg:'#333333'},
+    USD:{bg:'#595959',fg:'#ffffff'},
+    VND:{bg:'#8b5a2b',fg:'#ffffff'}
+  };
+
+  // 基准表：直接取自用户原表（兑 SGD / 兑 USD / 兑 CNY）
+  var BASELINE = {
+    CNY:[0.19,0.15,1],
+    AUD:[0.9,0.7,4.7],
+    HKD:[0.16,0.13,0.86],
+    IDR:[0.00007,0.00006,0.00038],
+    INR:[0.014,0.01,0.07],
+    JPY:[0.008,0.006,0.042],
+    KRW:[0.0009,0.0007,0.004],
+    MOP:[0.16,0.12,0.84],
+    MYR:[0.3,0.25,1.66],
+    NZD:[0.75,0.6,3.85],
+    PHP:[0.02,0.02,0.11],
+    SGD:[1,0.78,5.24],
+    THB:[0.04,0.03,0.2],
+    TWD:[0.04,0.03,0.2],
+    USD:[1.28,1,6.8],
+    VND:[0.00005,0.00004,0.00026]
+  };
+
+  var CACHE_KEY  = 'fx_board_cache_v1';
+  var REFRESH_DAYS = 30;                       // 满 30 天自动重抓
+  var DAY_MS = 24 * 60 * 60 * 1000;
+
+  // 小写币种码 → 大写（部分接口用小写）
+  function upperKeys(obj) {
+    var out = {};
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) out[k.toUpperCase()] = obj[k];
+    }
+    return out;
+  }
+
+  // 汇率接口：全部免 key、面向浏览器；并行抢，谁先成功用谁
+  var SOURCES = [
+    {
+      name: 'ExchangeRate-API',
+      url: 'https://open.er-api.com/v6/latest/USD',
+      pick: function (d) { return (d && d.result === 'success' && d.rates) ? d.rates : null; }
+    },
+    {
+      name: 'currency-api (jsDelivr)',
+      url: 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+      pick: function (d) { return (d && d.usd) ? upperKeys(d.usd) : null; }
+    },
+    {
+      name: 'currency-api (Pages)',
+      url: 'https://latest.currency-api.pages.dev/v1/currencies/usd.json',
+      pick: function (d) { return (d && d.usd) ? upperKeys(d.usd) : null; }
+    },
+    {
+      name: 'ExchangeRate-API v4',
+      url: 'https://api.exchangerate-api.com/v4/latest/USD',
+      pick: function (d) { return (d && d.rates) ? d.rates : null; }
+    },
+    {
+      name: 'Frankfurter (欧洲央行)',
+      url: 'https://api.frankfurter.app/latest?from=USD',
+      pick: function (d) { return (d && d.rates) ? upperKeys(d.rates) : null; }
+    }
+  ];
+
+  /* ============================================================
+     数字格式化：≥1 保留 2 位小数；<1 保留 4 位有效数字；去掉末尾多余的 0
+     （这套规则能逐格还原用户原表的写法）
+     ============================================================ */
+  function fmt(v) {
+    if (v === null || v === undefined || v === '' || !isFinite(v) || v <= 0) return '—';
+    var s = (v >= 1) ? v.toFixed(2) : v.toPrecision(4);
+    if (/e/i.test(s)) {                       // 极小值可能出现科学计数法，退回定点写法
+      s = v.toFixed(12);
+    }
+    if (s.indexOf('.') >= 0) {
+      s = s.replace(/0+$/, '').replace(/\.$/, '');
+    }
+    return s;
+  }
+
+  function parseNum(txt) {
+    var n = parseFloat(String(txt).replace(/[,\s]/g, ''));
+    return (isFinite(n) && n > 0) ? n : null;
+  }
+
+  function fmtDate(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+  }
+
+  /* ============================================================
+     用「1 美元 = ? 各币种」换算成三列口径
+     ============================================================ */
+  function crossRates(perUSD) {
+    if (!perUSD || !perUSD.USD || !perUSD.SGD || !perUSD.CNY) return null;
+    var out = {}, missing = [];
+    for (var i = 0; i < CURRENCIES.length; i++) {
+      var c = CURRENCIES[i];
+      var r = perUSD[c];
+      if (!r || !isFinite(r) || r <= 0) { out[c] = null; missing.push(c); continue; }
+      out[c] = [perUSD.SGD / r, 1 / r, perUSD.CNY / r];
+    }
+    return { vals: out, missing: missing };
+  }
+
+  /* ============================================================
+     状态
+     ============================================================ */
+  var state = {
+    vals: null,        // {CUR:[a,b,c]}
+    source: 'base',    // 'base' | 'manual' | 接口名
+    updatedAt: 0,
+    editing: false,
+    failed: false
+  };
+
+  /* ============================================================
+     渲染
+     ============================================================ */
+  var tbody = document.getElementById('tbody');
+  var dot = document.getElementById('dot');
+  var statusText = document.getElementById('statusText');
+  var btnEdit = document.getElementById('btnEdit');
+  var btnRefresh = document.getElementById('btnRefresh');
+
+  function buildTable() {
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < CURRENCIES.length; i++) {
+      var c = CURRENCIES[i];
+      var st = ROW_STYLE[c] || { bg: '#e5e7eb', fg: '#333' };
+      var tr = document.createElement('tr');
+
+      var tdLabel = document.createElement('td');
+      tdLabel.className = 'cur';
+      tdLabel.textContent = c;
+      tdLabel.style.background = st.bg;
+      tdLabel.style.color = st.fg;
+      tr.appendChild(tdLabel);
+
+      for (var j = 0; j < 3; j++) {
+        var td = document.createElement('td');
+        td.className = 'val';
+        td.setAttribute('data-cur', c);
+        td.setAttribute('data-col', String(j));
+        tr.appendChild(td);
+      }
+      frag.appendChild(tr);
+    }
+    tbody.innerHTML = '';
+    tbody.appendChild(frag);
+  }
+
+  function paint() {
+    var cells = tbody.querySelectorAll('td.val');
+    for (var i = 0; i < cells.length; i++) {
+      var c = cells[i].getAttribute('data-cur');
+      var j = parseInt(cells[i].getAttribute('data-col'), 10);
+      var v = state.vals && state.vals[c] ? state.vals[c][j] : null;
+      cells[i].textContent = fmt(v);
+    }
+  }
+
+  function isFileProto() {
+    return (typeof location !== 'undefined' && location.protocol === 'file:');
+  }
+
+  function paintStatus(extra) {
+    var txt;
+    if (state.source === 'manual') {
+      dot.className = 'dot base';
+      statusText.innerHTML = '<b>手动维护的汇率</b>　最后修改 <b>' + fmtDate(state.updatedAt) +
+        '</b>　—　不会自动覆盖；点“刷新汇率”可换回自动抓取';
+    } else if (state.source === 'base') {
+      dot.className = 'dot base';
+      txt = '<b>基准表</b>' + (extra ? '（' + extra + '）' : '') +
+            '　—　没连上汇率接口，显示的是初始基准值';
+      // 双击打开（file://）时浏览器会拦掉联网请求，直接告诉用户该怎么打开
+      if (isFileProto()) {
+        txt += '<br><span class="warn">你是双击打开的，浏览器不让这种页面联网 —— ' +
+               '请先双击「启动.command」，再打开 http://localhost:3000/exchange_rate_board.html</span>';
+      }
+      statusText.innerHTML = txt;
+    } else {
+      dot.className = 'dot live';
+      var next = state.updatedAt + REFRESH_DAYS * DAY_MS;
+      txt = '数据源：<b>' + state.source + '</b>　更新于 <b>' + fmtDate(state.updatedAt) +
+            '</b>　下次自动更新 ' + fmtDate(next);
+      statusText.innerHTML = txt;
+    }
+  }
+
+  /* ============================================================
+     读写缓存
+     ============================================================ */
+  function loadCache() {
+    try {
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      var o = JSON.parse(raw);
+      if (!o || !o.vals) return null;
+      return o;
+    } catch (e) { return null; }
+  }
+  function saveCache() {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
+        vals: state.vals, source: state.source, updatedAt: state.updatedAt
+      }));
+    } catch (e) { /* 隐私模式下写不进去，忽略即可 */ }
+  }
+
+  function useBaseline(extra) {
+    var v = {};
+    for (var i = 0; i < CURRENCIES.length; i++) {
+      v[CURRENCIES[i]] = BASELINE[CURRENCIES[i]].slice();
+    }
+    state.vals = v;
+    state.source = 'base';
+    state.updatedAt = 0;
+    paint();
+    paintStatus(extra);
+  }
+
+  /* ============================================================
+     抓取
+     ============================================================ */
+  function fetchJSON(url, ms) {
+    return new Promise(function (resolve, reject) {
+      if (typeof fetch !== 'function') { reject(new Error('这个浏览器不支持 fetch')); return; }
+
+      var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        if (ctl) ctl.abort();
+        var e = new Error('超时：' + Math.round(ms / 1000) + ' 秒内没响应');
+        e.name = 'AbortError';
+        reject(e);
+      }, ms);
+
+      var opt = {};
+      if (ctl) opt.signal = ctl.signal;
+
+      var p;
+      try {
+        p = fetch(url, opt);
+      } catch (e) {
+        clearTimeout(timer);
+        done = true;
+        reject(e);
+        return;
+      }
+
+      p.then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (d) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(d);
+      }).catch(function (e) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+  }
+
+  // 把某个接口的响应转成可用的三列数据；失败抛错并带上原因
+  function useSource(src, d) {
+    var perUSD = src.pick(d);
+    if (!perUSD) throw new Error('连上了，但返回内容不是预期格式');
+    var res = crossRates(perUSD);
+    if (!res) throw new Error('返回内容里缺 SGD / USD / CNY');
+    return { name: src.name, vals: res.vals, missing: res.missing };
+  }
+
+  // 所有接口并行抢，谁先成功用谁（避免一个个试，最后卡很久）
+  function raceAll() {
+    return new Promise(function (resolve) {
+      var finished = 0, settled = false;
+      SOURCES.forEach(function (src) {
+        fetchJSON(src.url, 15000).then(function (d) {
+          try {
+            var r = useSource(src, d);
+            if (!settled) { settled = true; resolve(r); }
+          } catch (e) {
+            finished++;
+            if (finished === SOURCES.length && !settled) { settled = true; resolve(null); }
+          }
+        }).catch(function () {
+          finished++;
+          if (finished === SOURCES.length && !settled) { settled = true; resolve(null); }
+        });
+      });
+    });
+  }
+
+  function doRefresh() {
+    btnRefresh.disabled = true;
+    btnRefresh.textContent = '抓取中…';
+    dot.className = 'dot load';
+    statusText.textContent = '正在抓取最新汇率…';
+
+    raceAll().then(function (r) {
+      btnRefresh.disabled = false;
+      btnRefresh.textContent = '刷新汇率';
+
+      if (!r) {                       // 全部接口都失败
+        state.failed = true;
+        if (state.vals && state.source !== 'base') {
+          paintStatus();              // 已有旧数据，保留
+          toast('抓取失败，继续用上次的汇率');
+        } else {
+          useBaseline('抓取失败');
+          toast('连不上汇率接口，已显示基准表');
+        }
+        return;
+      }
+
+      state.failed = false;
+      state.vals = r.vals;
+      state.source = r.name;
+      state.updatedAt = Date.now();
+      paint();
+      saveCache();
+      paintStatus();
+
+      if (r.missing && r.missing.length) {
+        toast('已更新（' + r.missing.join('/') + ' 无公开报价，显示为 —）');
+      } else {
+        toast('汇率已更新');
+      }
+    });
+  }
+
+  /* ============================================================
+     网络诊断
+     ============================================================ */
+  var diagText = '';
+  var diagBox = document.getElementById('diagBox');
+  var diagPre = document.getElementById('diagText');
+
+  function envInfo() {
+    var proto = (typeof location !== 'undefined' && location.protocol) ? location.protocol : '未知';
+    var ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '未知';
+    var br = '未知';
+    if (/Edg\//.test(ua)) br = 'Edge';
+    else if (/Chrome\//.test(ua)) br = 'Chrome';
+    else if (/Firefox\//.test(ua)) br = 'Firefox';
+    else if (/Safari\//.test(ua)) br = 'Safari';
+    return { proto: proto, ua: ua, browser: br };
+  }
+
+  function runDiag() {
+    var env = envInfo();
+    var lines = [];
+    lines.push('打开方式：' + env.proto + '（' + env.browser + '）');
+    lines.push('诊断时间：' + new Date().toLocaleString());
+    lines.push('当前状态：' + (state.source === 'base' ? '基准表（没抓到）' : state.source));
+    lines.push('');
+    lines.push('逐个测试 ' + SOURCES.length + ' 个汇率接口：');
+    diagPre.textContent = lines.join('\n') + '\n\n测试中，请稍候…';
+
+    var chain = Promise.resolve();
+    SOURCES.forEach(function (src, i) {
+      chain = chain.then(function () {
+        var t0 = Date.now();
+        return fetchJSON(src.url, 12000).then(function (d) {
+          var secs = ((Date.now() - t0) / 1000).toFixed(1);
+          var ok = false;
+          try { useSource(src, d); ok = true; } catch (e) { /* 格式问题 */ }
+          lines.push((ok ? '✅ ' : '⚠️ ') + '[' + (i + 1) + '] ' + src.name +
+                     ' — ' + secs + 's · ' + (ok ? '正常' : '连上了但内容不是预期格式'));
+        }).catch(function (e) {
+          var secs = ((Date.now() - t0) / 1000).toFixed(1);
+          var msg = (e && e.name === 'AbortError') ? (e.message || '超时')
+                                                  : String((e && e.message) || e);
+          lines.push('❌ [' + (i + 1) + '] ' + src.name + ' — ' + secs + 's · ' + msg);
+        });
+      });
+    });
+
+    return chain.then(function () {
+      lines.push('');
+      if (env.proto === 'file:') {
+        lines.push('提示：页面是双击打开的（file://），部分浏览器会直接拦掉这种页面的联网请求。');
+        lines.push('可以试试：把文件用 Chrome 打开，或用 http://localhost:3000/ 方式打开。');
+      }
+      lines.push('');
+      lines.push('接口地址：');
+      SOURCES.forEach(function (src, i) { lines.push('  [' + (i + 1) + '] ' + src.url); });
+      diagText = lines.join('\n');
+      diagPre.textContent = diagText;
+    });
+  }
+
+  function showDiag() {
+    diagBox.classList.remove('hidden');
+    runDiag();
+  }
+
+  /* ============================================================
+     复制
+     ============================================================ */
+  function copyText(txt, msg) {
+    msg = msg || '已复制，直接粘进文档即可';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () {
+        toast(msg);
+      }).catch(function () {
+        fallbackCopy(txt, msg);
+      });
+    } else {
+      fallbackCopy(txt, msg);
+    }
+  }
+
+  function fallbackCopy(txt, msg) {
+    var ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    if (ok) toast(msg);
+    else toast('复制失败，请手动选中内容');
+  }
+
+  function cellText(c, j) {
+    var v = state.vals && state.vals[c] ? state.vals[c][j] : null;
+    return fmt(v);
+  }
+
+  function tsv(withHeaderAndLabel) {
+    var lines = [];
+    if (withHeaderAndLabel) lines.push(['货币', '兑 SGD', '兑 USD', '兑 CNY'].join('\t'));
+    for (var i = 0; i < CURRENCIES.length; i++) {
+      var c = CURRENCIES[i];
+      var row = [];
+      if (withHeaderAndLabel) row.push(c);
+      row.push(cellText(c, 0), cellText(c, 1), cellText(c, 2));
+      lines.push(row.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  /* ============================================================
+     手动调整
+     ============================================================ */
+  function setEditing(on) {
+    state.editing = on;
+    var cells = tbody.querySelectorAll('td.val');
+    for (var i = 0; i < cells.length; i++) {
+      if (on) {
+        cells[i].setAttribute('contenteditable', 'true');
+      } else {
+        cells[i].removeAttribute('contenteditable');
+      }
+    }
+    btnEdit.textContent = on ? '完成调整' : '手动调整';
+    btnEdit.className = on ? 'on' : '';
+
+    if (on) {
+      dot.className = 'dot base';
+      statusText.innerHTML = '<b>手动调整中</b>　—　点格子直接改数字，改完点“完成调整”保存';
+    } else {
+      paintStatus();
+    }
+  }
+
+  tbody.addEventListener('input', function (e) {
+    var td = e.target;
+    if (!td || String(td.className).indexOf('val') < 0) return;
+    var c = td.getAttribute('data-cur');
+    var j = parseInt(td.getAttribute('data-col'), 10);
+    var n = parseNum(td.textContent);
+    if (!state.vals[c]) state.vals[c] = [null, null, null];
+    state.vals[c][j] = n;
+  });
+
+  tbody.addEventListener('blur', function (e) {
+    var td = e.target;
+    if (!td || String(td.className).indexOf('val') < 0) return;
+    var c = td.getAttribute('data-cur');
+    var j = parseInt(td.getAttribute('data-col'), 10);
+    td.textContent = fmt(state.vals[c] ? state.vals[c][j] : null);
+    if (state.editing) {
+      state.source = 'manual';
+      state.updatedAt = Date.now();
+      saveCache();
+    }
+  }, true);
+
+  /* ============================================================
+     提示条
+     ============================================================ */
+  var toastEl = document.getElementById('toast'), toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 1900);
+  }
+
+  /* ============================================================
+     事件绑定
+     ============================================================ */
+  btnRefresh.addEventListener('click', doRefresh);
+  btnEdit.addEventListener('click', function () { setEditing(!state.editing); });
+  document.getElementById('btnCopyAll').addEventListener('click', function () {
+    copyText(tsv(true));
+  });
+  document.getElementById('btnCopyVals').addEventListener('click', function () {
+    copyText(tsv(false));
+  });
+  document.getElementById('diagLink').addEventListener('click', function () {
+    if (diagBox.classList.contains('hidden')) showDiag();
+    else diagBox.classList.add('hidden');
+  });
+  document.getElementById('btnRunDiag').addEventListener('click', runDiag);
+  document.getElementById('btnCopyDiag').addEventListener('click', function () {
+    copyText(diagText || '（先等一下诊断结果）', '诊断信息已复制，发我即可');
+  });
+
+  /* ============================================================
+     启动（页面一加载就跑，不依赖用户操作）
+     ============================================================ */
+  buildTable();
+
+  var cached = loadCache();
+  if (cached) {
+    state.vals = cached.vals;
+    state.source = cached.source || 'base';
+    state.updatedAt = cached.updatedAt || 0;
+    paint();
+    paintStatus();
+  } else {
+    useBaseline();
+  }
+
+  // 手动维护过的表不自动覆盖；基准表 / 超过 30 天没更新的才自动重抓
+  var stale = !cached || (
+      cached.source !== 'manual' &&
+      (!cached.updatedAt || cached.source === 'base' ||
+       Date.now() - cached.updatedAt > REFRESH_DAYS * DAY_MS)
+  );
+  if (stale) doRefresh();
+
+  // 供自测挂载
+  window.__fxBoard = {
+    fmt: fmt, crossRates: crossRates, tsv: tsv, BASELINE: BASELINE,
+    CURRENCIES: CURRENCIES, SOURCES: SOURCES, state: state,
+    loadCache: loadCache, REFRESH_DAYS: REFRESH_DAYS,
+    raceAll: raceAll, useSource: useSource, runDiag: runDiag,
+    getDiagText: function () { return diagText; }
+  };
+})();
+</script>
+</body>
+</html>
